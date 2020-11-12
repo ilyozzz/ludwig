@@ -64,7 +64,8 @@ class H3FeatureMixin(object):
             dataset_df,
             dataset,
             metadata,
-            preprocessing_parameters
+            preprocessing_parameters={},
+            global_preprocessing_parameters={}
     ):
         column = dataset_df[feature[NAME]]
         if column.dtype == object:

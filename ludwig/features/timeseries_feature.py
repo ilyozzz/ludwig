@@ -74,7 +74,13 @@ class TimeseriesFeatureMixin(object):
         max_length = 0
         ts_vectors = []
         for ts in timeseries:
-            ts_vector = np.array(tokenizer(ts)).astype(np.float32)
+            if ts:
+                tokenized = tokenizer(ts)
+            else:
+                tokenized = [padding_value]
+
+            ts_vector = np.array(tokenized).astype(np.float32)
+
             ts_vectors.append(ts_vector)
             if len(ts_vector) > max_length:
                 max_length = len(ts_vector)
@@ -102,13 +108,31 @@ class TimeseriesFeatureMixin(object):
         return timeseries_matrix
 
     @staticmethod
-    def feature_data(column, metadata, preprocessing_parameters):
+    def feature_data(column, metadata, preprocessing_parameters={}, global_preprocessing_parameters={}):
+        offset = 0
+        max_timeseries_length = metadata.get('max_timeseries_length', 1)
+
+        if preprocessing_parameters.get('matrix_profile'):
+            seq_length = preprocessing_parameters.get('matrix_profile', {}).get('window_size')
+
+            if seq_length:
+                column = TimeseriesFeatureMixin.add_timeseries_matrix_profile(column, seq_length)
+                # rows from range(0, seq_length - 1) indexes are None
+                offset = seq_length - 1
+
+                if max_timeseries_length < seq_length:
+                    max_timeseries_length = seq_length
+
         timeseries_data = TimeseriesFeatureMixin.build_matrix(
             column,
             preprocessing_parameters['tokenizer'],
             metadata['max_timeseries_length'],
             preprocessing_parameters['padding_value'],
             preprocessing_parameters['padding'])
+
+        metadata['max_timeseries_length'] = max_timeseries_length
+        global_preprocessing_parameters['offset'] = offset
+
         return timeseries_data
 
     @staticmethod
@@ -117,13 +141,64 @@ class TimeseriesFeatureMixin(object):
             dataset_df,
             dataset,
             metadata,
-            preprocessing_parameters
+            preprocessing_parameters={},
+            global_preprocessing_parameters={}
     ):
         dataset[feature[NAME]] = TimeseriesFeatureMixin.feature_data(
             dataset_df[feature[NAME]].astype(str),
             metadata[feature[NAME]],
-            preprocessing_parameters
+            preprocessing_parameters=preprocessing_parameters,
+            global_preprocessing_parameters=global_preprocessing_parameters
         )
+
+    @staticmethod
+    def add_timeseries_matrix_profile(column, seq_length):
+        """
+        Computing matrix profile with window size :seq_length and preparing timeseries embeddings then
+        :param column: Column data array
+        :param seq_length: length of an array of preceeding column values to use
+        """
+
+        import stumpy
+
+        try:
+            # stumpy needs np float
+            old_data = np.array(column, dtype=np.floating)
+        except ValueError:
+            raise Exception('Can\'t convert column to float')
+
+        try:
+            if tf.test.gpu_device_name():
+                mp = stumpy.gpu_stump(old_data, m=seq_length, ignore_trivial=False)
+            else:
+                mp = stumpy.stump(old_data, m=seq_length, ignore_trivial=False)
+
+        except TypeError as e:
+            print('Type issue in stumpy:')
+            raise e
+        except ValueError as e:
+            print('Seq_length issue in stumpy')
+            raise e
+
+        window_pad_length = seq_length - 1
+
+        backfill_with = mp[:, 0][0]
+
+        # let's fill previous None values with first matrix profile value `backfill_with`
+        window_pad = np.array([backfill_with] * window_pad_length)
+        matrix_profile = np.concatenate([window_pad, mp[:, 0]]).tolist()
+
+        if np.isnan(matrix_profile).any():
+            raise Exception('Matrix profile for the column contains NaN values. Try to increase the dataset size')
+
+        # because we have `seq_length` window then our `window_pad_length` indexes will be null
+        window_data = [None] * window_pad_length
+        for index in range(window_pad_length, len(column)):
+            window_data.append(' '.join(
+                str(j) for j in matrix_profile[index - window_pad_length: index + 1]
+            ))
+
+        return window_data
 
 
 class TimeseriesInputFeature(TimeseriesFeatureMixin, SequenceInputFeature):

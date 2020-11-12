@@ -654,6 +654,10 @@ def is_model_dir(path: str) -> bool:
     return is_model_dir
 
 
+def sampling(selection, offset=0, limit=None):
+    return selection[offset:(limit + offset if limit is not None else None)]
+
+
 external_data_reader_registry = {
     **{fmt: read_csv for fmt in CSV_FORMATS},
     **{fmt: read_tsv for fmt in TSV_FORMATS},

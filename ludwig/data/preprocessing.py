@@ -923,7 +923,8 @@ def build_dataset(
     dataset = build_data(
         dataset_df,
         features,
-        metadata
+        metadata,
+        global_preprocessing_parameters=global_preprocessing_parameters
     )
 
     dataset[SPLIT] = get_split(
@@ -999,7 +1000,7 @@ def build_metadata(dataset_df, features, global_preprocessing_parameters):
     return metadata
 
 
-def build_data(dataset_df, features, training_set_metadata):
+def build_data(dataset_df, features, training_set_metadata, global_preprocessing_parameters={}):
     dataset = {}
     for feature in features:
         preprocessing_parameters = training_set_metadata[feature[NAME]][
@@ -1018,7 +1019,8 @@ def build_data(dataset_df, features, training_set_metadata):
             dataset_df,
             dataset,
             training_set_metadata,
-            preprocessing_parameters
+            preprocessing_parameters=preprocessing_parameters,
+            global_preprocessing_parameters=global_preprocessing_parameters
         )
     return dataset
 
