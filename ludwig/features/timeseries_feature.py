@@ -18,6 +18,8 @@ import logging
 
 import numpy as np
 import tensorflow as tf
+from numba import cuda
+import pandas as pd
 
 from ludwig.constants import *
 from ludwig.encoders.sequence_encoders import StackedCNN, ParallelCNN, \
@@ -112,16 +114,14 @@ class TimeseriesFeatureMixin(object):
         offset = 0
         max_timeseries_length = metadata.get('max_timeseries_length', 1)
 
-        if preprocessing_parameters.get('matrix_profile'):
-            seq_length = preprocessing_parameters.get('matrix_profile', {}).get('window_size')
+        seq_length = preprocessing_parameters.get('window_size', 1)
 
-            if seq_length:
-                column = TimeseriesFeatureMixin.add_timeseries_matrix_profile(column, seq_length)
-                # rows from range(0, seq_length - 1) indexes are None
-                offset = seq_length - 1
+        column = TimeseriesFeatureMixin.add_timeseries_matrix_profile(column, seq_length, preprocessing_parameters)
+        # rows from range(0, seq_length - 1) indexes are None
+        offset = seq_length - 1
 
-                if max_timeseries_length < seq_length:
-                    max_timeseries_length = seq_length
+        if max_timeseries_length < seq_length:
+            max_timeseries_length = seq_length
 
         timeseries_data = TimeseriesFeatureMixin.build_matrix(
             column,
@@ -152,13 +152,7 @@ class TimeseriesFeatureMixin(object):
         )
 
     @staticmethod
-    def add_timeseries_matrix_profile(column, seq_length):
-        """
-        Computing matrix profile with window size :seq_length and preparing timeseries embeddings then
-        :param column: Column data array
-        :param seq_length: length of an array of preceeding column values to use
-        """
-
+    def build_stumpy_mp(column, seq_length):
         import stumpy
 
         try:
@@ -168,8 +162,10 @@ class TimeseriesFeatureMixin(object):
             raise Exception('Can\'t convert column to float')
 
         try:
-            if tf.test.gpu_device_name():
-                mp = stumpy.gpu_stump(old_data, m=seq_length, ignore_trivial=False)
+            cuda.is_available()
+            if cuda.is_available():
+                gpu_device_ids = [device.id for device in cuda.list_devices()]
+                mp = stumpy.gpu_stump(old_data, m=seq_length, ignore_trivial=False, device_id=gpu_device_ids)
             else:
                 mp = stumpy.stump(old_data, m=seq_length, ignore_trivial=False)
 
@@ -180,15 +176,30 @@ class TimeseriesFeatureMixin(object):
             print('Seq_length issue in stumpy')
             raise e
 
+        return mp
+
+    @staticmethod
+    def add_timeseries_matrix_profile(column, seq_length, preprocessing_parameters):
+        """
+        Computing matrix profile with window size :seq_length and preparing timeseries embeddings then
+        :param column: Column data array
+        :param seq_length: length of an array of preceeding column values to use
+        """
+
+        if preprocessing_parameters.get('matrix_profile'):
+            stumpy_mp = TimeseriesFeatureMixin.build_stumpy_mp(column, seq_length)
+            mp = stumpy_mp[:, 0]
+        else:
+            mp = column
+
         window_pad_length = seq_length - 1
 
-        backfill_with = mp[:, 0][0]
-
         # let's fill previous None values with first matrix profile value `backfill_with`
+        backfill_with = mp[0]
         window_pad = np.array([backfill_with] * window_pad_length)
-        matrix_profile = np.concatenate([window_pad, mp[:, 0]]).tolist()
+        matrix_profile = np.concatenate([window_pad, mp]).tolist()
 
-        if np.isnan(matrix_profile).any():
+        if pd.isnull(matrix_profile).any():
             raise Exception('Matrix profile for the column contains NaN values. Try to increase the dataset size')
 
         # because we have `seq_length` window then our `window_pad_length` indexes will be null
