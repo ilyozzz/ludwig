@@ -32,6 +32,65 @@ from ludwig.utils.strings_utils import tokenizer_registry
 logger = logging.getLogger(__name__)
 
 
+def calculate_matrix_profile(column, seq_length):
+    import stumpy
+
+    try:
+        # stumpy needs np float
+        old_data = np.array(column, dtype=np.floating)
+    except ValueError:
+        raise Exception('Can\'t convert column to float')
+
+    try:
+        if cuda.is_available():
+            gpu_device_ids = [device.id for device in cuda.list_devices()]
+            mp = stumpy.gpu_stump(old_data, m=seq_length, ignore_trivial=False, device_id=gpu_device_ids)
+        else:
+            mp = stumpy.stump(old_data, m=seq_length, ignore_trivial=False)
+
+    except TypeError as e:
+        print('Type issue in stumpy:')
+        raise e
+    except ValueError as e:
+        print('Seq_length issue in stumpy')
+        raise e
+
+    if pd.isnull(mp).any():
+        raise Exception('Matrix profile for the column contains NaN values. Try to increase the dataset size')
+
+    return mp
+
+
+def transform_timeseries_data(column, seq_length, preprocessing_parameters):
+    """
+    Computing matrix profile with window size :seq_length and preparing timeseries embeddings then
+    :param column: Column data array
+    :param seq_length: length of an array of preceeding column values to use
+    """
+
+    if preprocessing_parameters.get('matrix_profile'):
+        stumpy_mp = calculate_matrix_profile(column, seq_length)
+        mp = stumpy_mp[:, 0]
+    else:
+        mp = column
+
+    window_pad_length = seq_length - 1
+
+    # let's fill previous None values with first matrix profile value `backfill_with`
+    backfill_with = mp[0]
+    window_pad = np.array([backfill_with] * window_pad_length)
+    matrix_profile = np.concatenate([window_pad, mp]).tolist()
+
+    # because we have `seq_length` window then our `window_pad_length` indexes will be null
+    window_data = [None] * window_pad_length
+    for index in range(window_pad_length, len(column)):
+        window_data.append(' '.join(
+            str(j) for j in matrix_profile[index - window_pad_length: index + 1]
+        ))
+
+    return window_data
+
+
 class TimeseriesFeatureMixin(object):
     type = TIMESERIES
 
@@ -116,7 +175,7 @@ class TimeseriesFeatureMixin(object):
 
         seq_length = preprocessing_parameters.get('window_size', 1)
 
-        column = TimeseriesFeatureMixin.add_timeseries_matrix_profile(column, seq_length, preprocessing_parameters)
+        column = transform_timeseries_data(column, seq_length, preprocessing_parameters)
         # rows from range(0, seq_length - 1) indexes are None
         offset = seq_length - 1
 
@@ -150,66 +209,6 @@ class TimeseriesFeatureMixin(object):
             preprocessing_parameters=preprocessing_parameters,
             global_preprocessing_parameters=global_preprocessing_parameters
         )
-
-    @staticmethod
-    def build_stumpy_mp(column, seq_length):
-        import stumpy
-
-        try:
-            # stumpy needs np float
-            old_data = np.array(column, dtype=np.floating)
-        except ValueError:
-            raise Exception('Can\'t convert column to float')
-
-        try:
-            cuda.is_available()
-            if cuda.is_available():
-                gpu_device_ids = [device.id for device in cuda.list_devices()]
-                mp = stumpy.gpu_stump(old_data, m=seq_length, ignore_trivial=False, device_id=gpu_device_ids)
-            else:
-                mp = stumpy.stump(old_data, m=seq_length, ignore_trivial=False)
-
-        except TypeError as e:
-            print('Type issue in stumpy:')
-            raise e
-        except ValueError as e:
-            print('Seq_length issue in stumpy')
-            raise e
-
-        return mp
-
-    @staticmethod
-    def add_timeseries_matrix_profile(column, seq_length, preprocessing_parameters):
-        """
-        Computing matrix profile with window size :seq_length and preparing timeseries embeddings then
-        :param column: Column data array
-        :param seq_length: length of an array of preceeding column values to use
-        """
-
-        if preprocessing_parameters.get('matrix_profile'):
-            stumpy_mp = TimeseriesFeatureMixin.build_stumpy_mp(column, seq_length)
-            mp = stumpy_mp[:, 0]
-        else:
-            mp = column
-
-        window_pad_length = seq_length - 1
-
-        # let's fill previous None values with first matrix profile value `backfill_with`
-        backfill_with = mp[0]
-        window_pad = np.array([backfill_with] * window_pad_length)
-        matrix_profile = np.concatenate([window_pad, mp]).tolist()
-
-        if pd.isnull(matrix_profile).any():
-            raise Exception('Matrix profile for the column contains NaN values. Try to increase the dataset size')
-
-        # because we have `seq_length` window then our `window_pad_length` indexes will be null
-        window_data = [None] * window_pad_length
-        for index in range(window_pad_length, len(column)):
-            window_data.append(' '.join(
-                str(j) for j in matrix_profile[index - window_pad_length: index + 1]
-            ))
-
-        return window_data
 
 
 class TimeseriesInputFeature(TimeseriesFeatureMixin, SequenceInputFeature):
