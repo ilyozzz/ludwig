@@ -69,17 +69,17 @@ def transform_timeseries_data(column, seq_length, preprocessing_parameters):
     """
 
     if preprocessing_parameters.get('matrix_profile'):
-        stumpy_mp = calculate_matrix_profile(column, seq_length)
-        mp = stumpy_mp[:, 0]
+        mp = calculate_matrix_profile(column, seq_length)
+        col = mp[:, 0]
     else:
-        mp = column
+        col = column
 
     window_pad_length = seq_length - 1
 
     # let's fill previous None values with first matrix profile value `backfill_with`
-    backfill_with = mp[0]
+    backfill_with = col[0]
     window_pad = np.array([backfill_with] * window_pad_length)
-    matrix_profile = np.concatenate([window_pad, mp]).tolist()
+    matrix_profile = np.concatenate([window_pad, col]).tolist()
 
     # because we have `seq_length` window then our `window_pad_length` indexes will be null
     window_data = [None] * window_pad_length
